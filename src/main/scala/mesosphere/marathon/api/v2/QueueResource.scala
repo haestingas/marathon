@@ -1,7 +1,7 @@
 package mesosphere.marathon.api.v2
 
 import javax.inject.Inject
-import javax.servlet.http.{ HttpServletResponse, HttpServletRequest }
+import javax.servlet.http.{ HttpServletRequest, HttpServletResponse }
 import javax.ws.rs._
 import javax.ws.rs.core.{ Context, MediaType, Response }
 
@@ -11,7 +11,7 @@ import mesosphere.marathon.api.v2.json.Formats
 import mesosphere.marathon.api.{ AuthResource, MarathonMediaType }
 import mesosphere.marathon.core.base.Clock
 import mesosphere.marathon.core.launchqueue.LaunchQueue
-import mesosphere.marathon.plugin.auth.{ Authorizer, Authenticator, UpdateAppOrGroup }
+import mesosphere.marathon.plugin.auth.{ Authenticator, Authorizer, UpdateApp, ViewApp }
 import mesosphere.marathon.state.PathId._
 import play.api.libs.json.Json
 
@@ -32,8 +32,8 @@ class QueueResource @Inject() (
   def index(@Context req: HttpServletRequest, @Context resp: HttpServletResponse): Response = {
     import Formats._
 
-    doIfAuthenticated(req, resp) { implicit identity =>
-      val queuedWithDelay = launchQueue.list.filter(t => t.waiting && isAllowedToView(t.app.id)).map {
+    doIfAuthenticated(req) { implicit identity =>
+      val queuedWithDelay = launchQueue.list.filter(t => t.waiting && isAuthorized(ViewApp, t.app)).map {
         case taskCount: LaunchQueue.QueuedTaskCount =>
           val timeLeft = clock.now() until taskCount.backOffUntil
           Json.obj(
@@ -52,14 +52,12 @@ class QueueResource @Inject() (
   @DELETE
   @Path("""{appId:.+}/delay""")
   def resetDelay(@PathParam("appId") appId: String,
-                 @Context req: HttpServletRequest, @Context resp: HttpServletResponse): Response = {
-    val id = appId.toRootPath
-    doIfAuthorized(req, resp, UpdateAppOrGroup, id) { implicit identity =>
-      launchQueue.list.find(_.app.id == id).map {
-        case taskCount: LaunchQueue.QueuedTaskCount =>
-          launchQueue.resetDelay(taskCount.app)
-          noContent
-      }.getOrElse(notFound(s"application $appId not found in task queue"))
+                 @Context req: HttpServletRequest,
+                 @Context resp: HttpServletResponse): Response = doIfAuthenticated(req) { implicit identity =>
+    val maybeApp = launchQueue.list.find(_.app.id == appId.toRootPath).map(_.app)
+    doIfAuthorized(UpdateApp, maybeApp, notFound(s"application $appId not found in task queue")) { app =>
+      launchQueue.resetDelay(app)
+      noContent
     }
   }
 }
